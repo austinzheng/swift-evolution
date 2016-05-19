@@ -356,6 +356,10 @@ There are a couple of aspects to this feature:
 	let r3 : (Any, Int) =  b.fourth()
 	```
 
+**TODO**: Note that it's not yet clear whether or not it is desirable or theoretically sound to expose only part of the API of a protocol with associated types where the associated types cannot be known with sufficient detail.
+
+#### Dynamic narrowing using `as?`
+
 In addition to guarantees provided by the existential at the point of definition, the dynamic `as?` cast should also be able to narrow an existential at a use site:
 
 ```swift
@@ -403,7 +407,56 @@ if let narrowedA = as as? Any<FooProtocol, BazProtocol> {
 }
 ```
 
-Anything more sophisticated almost certainly requires covariance and contravariance annotations. (For example, simply assuming that input parameters can be treated as covariant can lead to incorrect code.) Refining requirements on which associated type protocol methods are exposed to an existential type can go into a follow-up proposal, because such enhancements would be additive in nature.
+Anything more sophisticated almost certainly requires covariance, invariance, and contravariance annotations. (For example, simply assuming that input parameters can be treated as covariant can lead to incorrect code.) If they are ever added, follow-up proposals can evaluate whether existentials can be more flexible in this regard.
+
+#### As arguments to generic functions
+
+Generic functions with protocol constraints rely on the protocol APIs being available in order to work correctly:
+
+```swift
+protocol MyProtocol {
+	func doSomething()
+}
+
+class Something : MyProtocol { ... }
+
+func foo<T : Sequence where T.Element : BarProtocol>(x: T) {
+	for item in x {
+		item.doSomething()
+	}	
+}
+
+let a : [Something] = ...
+foo(a)
+```
+
+The most straightforward solution is to allow existentials whose associated types are bound to concrete types (either by definition, or using `as?`) to be used as arguments to a generic method:
+
+```swift
+let b : Any<Sequence where .Element == Something> = ...
+
+// This is okay
+foo(b)
+```
+
+It should also be possible to allow existentials whose self requirements or associated types match or exceed any requirements specified in the generic type signature to be used as arguments.
+
+```swift
+let c : Any<Sequence where .Element : MyProtocol, .Element : AnotherProtocol>
+
+// This should be fine
+// foo only requires the sequence's element type to be MyProtocol, but c's
+// elements are both MyProtocol and AnotherProtocol compliant. 
+foo(c)
+
+// Another example:
+let d : Any<Collection where .Element : MyProtocol>
+
+// This is also fine
+// Both requirements are met: T is a sequence (because collections are
+// sequences), and the elements conform to MyProtocol.
+foo(d)
+```
 
 ### Repeated Protocols
 
