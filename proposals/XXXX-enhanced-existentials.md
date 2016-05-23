@@ -5,15 +5,15 @@
 * Status: **[Awaiting review](#rationale)**
 * Review manager: TBD
 
-## Introduction
-
 *NOTE TO DRAFT READERS*: Much of this proposal assumes that a smaller proposal, which simply renames `protocol<>` to `Any<>`, is accepted for Swift 3. If it isn't, this proposal takes on the task of proposing that change as well. It also assumes the existence of typealiases in protocols with associated types, including `Collection.Iterator.Element` being aliased to just `Collection.Element`.
+
+## Introduction
 
 Swift's support for existential types is currently quite limited: one or more protocols can be composed using the `Any<>` syntax. We propose, in the spirit of [*Completing Generics*](https://github.com/apple/swift/blob/master/docs/GenericsManifesto.md), to add support to Swift for describing more complex existential types, including those involving protocols with associated types.
 
 ## Acknowledgements
 
-Many thanks to [Matthew Johnson](mailto:matthew@anandabits.com), Thorsten Seitz, David Smith, Adrian Zubarev, and TBD, whose feedback and contributions were instrumental in composing this proposal.
+Many thanks to [Matthew Johnson](https://github.com/anandabits), Thorsten Seitz, [David Smith](https://twitter.com/Catfish_Man), [Adrian Zubarev](https://github.com/DevAndArtist), and TBD, whose feedback and contributions were instrumental in composing this proposal.
 
 ## Motivation
 
@@ -360,6 +360,8 @@ let collectionIsEmpty : Bool = a.isEmpty
 
 Protocol members whose inputs' types are defined using associated types only become accessible if all those associated types are bound to a specific concrete type, and the output requirements (below) are met.
 
+If a member is deemed 'nonaccessible', its API is exposed with any disqualifying associated types set to `Nothing`.
+
 Inputs are defined as the arguments of methods, the arguments of initializers, the arguments and return values of subscripts with setters, and properties with setters.
 
 Example:
@@ -402,6 +404,8 @@ Note that `as?` can be used to narrow existentials at runtime, allowing the user
 #### Members with outputs of associated types
 
 Protocol members whose outputs' types are defined using associated types only become accessible if the output type is a 'bare' associated type, or the associated type is a parameter to a covariant generic type such as `Optional<T>`. However, if the output types are all bound to concrete types, the member becomes available, even if the output type isn't covariant. In addition to all of this, the input requirements (above) also must be met.
+
+If a member is deemed 'nonaccessible', its API is exposed with any disqualifying associated types set to `Nothing`.
 
 Outputs are defined as the return values of methods, the return values of get-only subscripts, and get-only properties. Output types are covariant, and it is acceptable to return a supertype of the underlying associated type.
 
@@ -521,7 +525,7 @@ An `Any<...>` existential type can be trivially used in any of the following sit
 * Local variable type
 * Property type
 * Subscript input or output type
-* Function or initializer parameter
+* Parameter to non-generic function or initializer
 * Function return value
 * Dynamic casting (the object of `as?`, an `as` case, `as!`, etc)
 
@@ -529,26 +533,17 @@ Existentials cannot be used in the following ways:
 
 * As part of the superclass/protocol conformance portion of a type declaration.
 
-* In generic declarations, with the requirements composed out of generic type variables:
-
-	```swift
-	// NOT ALLOWED
-	func foo<A, B>(x: A, y: B) -> Any<A, B> { ... }
-	```
-
-* Passed as arguments of generic type to generic functions. This is consistent with Swift's current behavior: generics cannot be specialized on existential types, only concrete types.
-
 ### Generics
 
 Existentials can be used in generic declarations in the following ways:
 
-* As a parameter value or return value for a generic function or subscript, or a parameter value for a generic initializer. In this case generic type variables can only be used in the existential type's `where` clause constraints:
+* As a parameter value or return value for a generic function or subscript, or a parameter value for a generic initializer. In this case generic type variables are only allowed to be used in the existential type's `where` clause constraints:
 
 	```swift
 	func myFunc<T>(x: T, y: T) -> Any<Collection where .Element == T> { ... }
 	```
 
-* As the type of a property in a generic type. Again, generic type variables can only be used in the existential type's `where` clause constraints:
+* As the type of a property in a generic type. Again, generic type variables are only allowed to be used in the existential type's `where` clause constraints:
 
 	```swift
 	class MyClass<T> {
@@ -560,6 +555,9 @@ Existentials can be used in generic declarations in the following ways:
 
 	```swift
 	func myFunc<T where T : AllOf<class, FooProtocol, BarProtocol>>(x: T) { ... }
+
+	// Is exactly synonymous with:
+	// func myFunc<T where T : AnyObject, T : FooProtocol, T : BarProtocol>(x: T) { ... }
 	```
 
 	One use case is breaking complex sub-constraints into more legible typealiases. For example:
@@ -574,6 +572,18 @@ Existentials can be used in generic declarations in the following ways:
 
 	let b : Any<Collection where .Element : AllOf<IntCollection, CustomStringConvertible>>
 	```
+
+Existentials cannot be used with generics in the following ways:
+
+* In generic declarations, with the requirements composed out of generic type variables:
+
+	```swift
+	// NOT ALLOWED
+	func foo<A, B>(x: A, y: B) -> Any<A, B> { ... }
+	```
+
+* Passed as arguments of generic type `T` to generic functions, unless `T` is completely unconstrained and the argument's type is `T` or a generic type covariant on `T`. This is consistent with Swift's current behavior: generics cannot be specialized on existential types, only concrete types.
+
 
 ### Dynamic casting using `as?`
 
