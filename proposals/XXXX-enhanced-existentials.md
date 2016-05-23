@@ -536,6 +536,8 @@ Existentials cannot be used in the following ways:
 	func foo<A, B>(x: A, y: B) -> Any<A, B> { ... }
 	```
 
+* Passed as arguments of generic type to generic functions. This is consistent with Swift's current behavior: generics cannot be specialized on existential types, only concrete types.
+
 ### Generics
 
 Existentials can be used in generic declarations in the following ways:
@@ -572,30 +574,6 @@ Existentials can be used in generic declarations in the following ways:
 
 	let b : Any<Collection where .Element : AllOf<IntCollection, CustomStringConvertible>>
 	```
-
-### As arguments to generic functions
-
-Generic functions with protocol constraints rely on the protocol APIs being completely available in order to work correctly. Because of this, the following conditions must be satisfied in order for an existential to be passed as a generically typed argument into a generic function:
-
-* The argument type must be a single generic type variable `T`, or a generic type covariant on a single generic type variable (e.g. `Optional<T>`)
-
-* The existential must contain requirements matching any constraints on `T`. For example, if `T` is declared as `<T : Fooable>`, then the existential must contain a requirement for `Fooable` in some form.
-
-* If `T` must conform to any protocols with associated types, the existential must have bound all those associated types to concrete types. (If the existential conforms to protocols with associated types that aren't part of `T`'s constraints, those protocols' associated types don't need to be bound.)
-
-Why is it necessary that every associated type be bound to a concrete type? Because (conceptually) a generic function or type is *specialized* for all the types it is used with. This in turn means that each instance of a specialized generic function assumes that the concrete type of every associated type is known to it, and can be treated as such. For example, a generic function that only takes in `Collection`s can still grab elements from the collection and do things with them, despite not knowing anything about the specific type of the elements before specialization.
-
-Unfortunately, the fact that this is necessary prohibits certain types of existentials from being used as arguments to generic functions at all. For example, take `Sequence`. Let's look at a simplified version of `Sequence` whose only associated type is `Iterator`, which in turn must conform to `IteratorProtocol` with the associated type `Element`.
-
-If we want to express the notion of "a sequence of `Int`s", we can write:
-
-```swift
-let a : Any<Sequence where Sequence.Iterator : Any<IteratorProtocol where IteratorProtocol.Element == Int>>
-```
-
-There is no way to pin down the `Iterator` type like there is a way to pin down the `Element` type, because while all the sequences we are interested in share the same element type, they by necessity each have their own iterator types.
-
-In terms of practical programming, this is no big loss. In almost every case where a user might have wanted to pass an existential as an argument to a generic function, they would be better served writing a non-generic function that operates directly on existential types.
 
 ### Dynamic casting using `as?`
 
