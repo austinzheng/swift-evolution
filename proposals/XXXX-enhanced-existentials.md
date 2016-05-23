@@ -1,7 +1,7 @@
 # Enhanced Existential Support
 
 * Proposal: [SE-NNNN](https://github.com/apple/swift-evolution/blob/master/proposals/NNNN-name.md)
-* Authors: [Matthew Johnson](mailto:matthew@anandabits.com), Thorsten Seitz, David Smith, Adrian Zubarev, TBD, Austin Zheng
+* Authors: Douglas Gregor, Austin Zheng, et al.
 * Status: **[Awaiting review](#rationale)**
 * Review manager: TBD
 
@@ -10,6 +10,10 @@
 *NOTE TO DRAFT READERS*: Much of this proposal assumes that a smaller proposal, which simply renames `protocol<>` to `Any<>`, is accepted for Swift 3. If it isn't, this proposal takes on the task of proposing that change as well. It also assumes the existence of typealiases in protocols with associated types, including `Collection.Iterator.Element` being aliased to just `Collection.Element`.
 
 Swift's support for existential types is currently quite limited: one or more protocols can be composed using the `Any<>` syntax. We propose, in the spirit of [*Completing Generics*](https://github.com/apple/swift/blob/master/docs/GenericsManifesto.md), to add support to Swift for describing more complex existential types, including those involving protocols with associated types.
+
+## Acknowledgements
+
+Many thanks to [Matthew Johnson](mailto:matthew@anandabits.com), Thorsten Seitz, David Smith, Adrian Zubarev, and TBD, whose feedback and contributions were instrumental in composing this proposal.
 
 ## Motivation
 
@@ -208,6 +212,40 @@ let a : Any<class, Collection, Any<Streamable, CustomStringConvertible> where .E
 // Both Collection and OptionSetType have associated types.
 let b : Any<Collection, OptionSetType where .Element == Int>
 ```
+
+### Associated typealias rewriting
+
+Existentials using `Any<...>` should be able to accept constraints using associated type typealiases. For example, given:
+
+```swift
+protocol IteratorProtocol {
+	associatedtype Element
+}
+
+protocol Sequence {
+	associatedtype Iterator : IteratorProtocol
+	typealias Element = Iterator.Element
+}
+```
+
+The user should thus be allowed to write:
+
+```swift
+let a : Any<Sequence where .Element == Int>
+```
+
+rather than:
+
+```swift
+let a : Any<Sequence where Sequence.Iterator : Any<IteratorProtocol where IteratorProtocol.Element == Int>>
+```
+
+We will use the above example to illustrate the algorithm by which associated type typealiases are recursively rewritten. To expand a typealias that refers to other associated types in the protocol, take the right-hand side of the typealias expression and do the following:
+
+1. The outermost associated type is 'peeled off' (example; `Iterator`).
+2. A `where` clause constraint is created that constrains that associated type to an `Any` existential containing the protocol requirement containing the associated type described by the new outermost item. (Example: `Element` belongs to `IteratorProtocol`, the first item in `Iterator.Element` after `Iterator` is removed.)
+3. If the second-outermost item is the last item, then add a `where` clause to the existential containing the type and object of the constraint. (Example: `where IteratorProtocol.Element == Int`)
+4. Otherwise, go to step 2 and repeat the process.
 
 ## Theory
 
@@ -516,10 +554,10 @@ Existentials can be used in generic declarations in the following ways:
 	}
 	```
 
-* As the object of a constraint in a generic declaration's `where` clause:
+* As the object of a constraint in a generic declaration's `where` clause. However, this is not actually an existential, even though its syntax is identical. Instead, a 'pseudo-existential' used in this way is more like a bundle of constraints upon a type variable. I therefore propose that this usage require the keyword `AllOf` instead of `Any`. (This does not affect the use of existential typealiases in `where` clauses, as seen below.)
 
 	```swift
-	func myFunc<T where T : Any<class, FooProtocol, BarProtocol>>(x: T) { ... }
+	func myFunc<T where T : AllOf<class, FooProtocol, BarProtocol>>(x: T) { ... }
 	```
 
 	One use case is breaking complex sub-constraints into more legible typealiases. For example:
@@ -532,64 +570,32 @@ Existentials can be used in generic declarations in the following ways:
 	// becomes...
 	typealias IntCollection = Any<Collection where .Element == Int>
 
-	let b : Any<Collection where .Element : Any<IntCollection, CustomStringConvertible>>
+	let b : Any<Collection where .Element : AllOf<IntCollection, CustomStringConvertible>>
 	```
 
 ### As arguments to generic functions
 
-Generic functions with protocol constraints rely on the protocol APIs being available in order to work correctly:
+Generic functions with protocol constraints rely on the protocol APIs being completely available in order to work correctly. Because of this, the following conditions must be satisfied in order for an existential to be passed as a generically typed argument into a generic function:
+
+* The argument type must be a single generic type variable `T`, or a generic type covariant on a single generic type variable (e.g. `Optional<T>`)
+
+* The existential must contain requirements matching any constraints on `T`. For example, if `T` is declared as `<T : Fooable>`, then the existential must contain a requirement for `Fooable` in some form.
+
+* If `T` must conform to any protocols with associated types, the existential must have bound all those associated types to concrete types. (If the existential conforms to protocols with associated types that aren't part of `T`'s constraints, those protocols' associated types don't need to be bound.)
+
+Why is it necessary that every associated type be bound to a concrete type? Because (conceptually) a generic function or type is *specialized* for all the types it is used with. This in turn means that each instance of a specialized generic function assumes that the concrete type of every associated type is known to it, and can be treated as such. For example, a generic function that only takes in `Collection`s can still grab elements from the collection and do things with them, despite not knowing anything about the specific type of the elements before specialization.
+
+Unfortunately, the fact that this is necessary prohibits certain types of existentials from being used as arguments to generic functions at all. For example, take `Sequence`. Let's look at a simplified version of `Sequence` whose only associated type is `Iterator`, which in turn must conform to `IteratorProtocol` with the associated type `Element`.
+
+If we want to express the notion of "a sequence of `Int`s", we can write:
 
 ```swift
-protocol MyProtocol {
-	func doSomething()
-}
-
-class Something : MyProtocol { ... }
-
-func foo<T : Sequence where T.Element : MyProtocol>(x: T) {
-	for item in x {
-		item.doSomething()
-	}	
-}
-
-let a : [Something] = ...
-foo(a)
+let a : Any<Sequence where Sequence.Iterator : Any<IteratorProtocol where IteratorProtocol.Element == Int>>
 ```
 
-The most straightforward solution is to allow existentials whose associated types are bound to concrete types (either by definition, or using `as?`) to be used as arguments to a generic method:
+There is no way to pin down the `Iterator` type like there is a way to pin down the `Element` type, because while all the sequences we are interested in share the same element type, they by necessity each have their own iterator types.
 
-```swift
-let b : Any<Sequence where .Element == Something> = ...
-
-// This is okay
-foo(b)
-```
-
-For a given generic parameter `T`, it should also be possible to allow existential arguments which would be considered a subtype of a hypothetical existential created out of the requirements for `T` in the generic type signature.
-
-(Only requirements on `T` and its associated types are considered, unless there is a same-type constraint with a different type variable or that type variable's associated types, in which case that type's requirements are also pulled in.)
-
-All this only applies if the argument in question is of type `T`, or the argument is a generic type covariant on `T`. So, for example, `someArg: T` or `someArg: T?` can accept an existential value for `someArg`, but `anotherArg: (T, Int)` cannot accept an existential as part of the tuple. 
-
-In the following example, `foo` only requires the sequence's elements to conform to `MyProtocol`, but the elements in `c` conform to both `MyProtocol` and `AnotherProtocol`. Another way to visualize this is that the generic type `T` can be rewritten as the hypothetical existential `Any<Sequence where .Element : MyProtocol>`. Since `c`'s type is a subtype of this hypothetical existential, `c` can be used as the argument.
-
-```swift
-let c : Any<Sequence where .Element : MyProtocol, .Element : AnotherProtocol>
-
-// Acceptable, for reasons described above
-foo(c)
-```
-
-Here is another example:
-
-```swift
-let d : Any<Collection where .Element : MyProtocol>
-
-// This is also fine
-// Both requirements are met: T is a sequence (because collections are
-// sequences), and the elements conform to MyProtocol.
-foo(d)
-```
+In terms of practical programming, this is no big loss. In almost every case where a user might have wanted to pass an existential as an argument to a generic function, they would be better served writing a non-generic function that operates directly on existential types.
 
 ### Dynamic casting using `as?`
 
