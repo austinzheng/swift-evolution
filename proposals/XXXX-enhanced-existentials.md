@@ -5,8 +5,6 @@
 * Status: **[Awaiting review](#rationale)**
 * Review manager: TBD
 
-*NOTE TO DRAFT READERS*: Much of this proposal assumes that a smaller proposal, which simply renames `protocol<>` to `Any<>`, is accepted for Swift 3. If it isn't, this proposal takes on the task of proposing that change as well. It also assumes the existence of typealiases in protocols with associated types, including `Collection.Iterator.Element` being aliased to just `Collection.Element`.
-
 ## Introduction
 
 Swift's support for existential types is currently quite limited: one or more protocols can be composed using the `Any<>` syntax. We propose, in the spirit of [*Completing Generics*](https://github.com/apple/swift/blob/master/docs/GenericsManifesto.md), to add support to Swift for describing more complex existential types, including those involving protocols with associated types.
@@ -57,9 +55,13 @@ There are a variety of useful types which cannot be expressed currently within S
 
 An improved version of the `Any<...>` construct will serve as the primary method for declaring an existential type.
 
-Within the angle brackets `<` and `>` are zero or more *requirements*. Requirements are separated by commas. After the requirements is an optional `where` clause, in which constraints are placed upon any associated types introduced by previous requirements.
+Within the angle brackets `<` and `>` are one or more *requirements*. Requirements are separated by commas. After the requirements is an optional `where` clause, in which constraints are placed upon any associated types introduced by previous requirements.
 
-`Any<>` will be typealiased or special-cased to `Any`, the existential capable of containing any other type. For consistency, `Any<...>` with one class requirement or protocol requirement clause is exactly equal to just that bare class or protocol. `P` can be used in lieu of `Any<P>`, where `P` is a protocol with or without associated type or self requirements.
+`Any` will be defined as equivalent to the (illegal) form `Any<>`, the existential capable of containing any other type.
+
+For consistency, `Any<...>` with exactly one protocol requirement is exactly equal to just that bare protocol. `P` can be used in lieu of `Any<P>`, where `P` is a protocol with or without associated type or self requirements.
+
+`Any<...>` with an any-class requirement or a class requirement, but no protocol requirements, is prohibited and will result in a compiler warning to use `AnyObject` or that class directly, respectively. For example, `Any<Any<NSView>>`, `Any<NSObject, Any<NSView>>`, and `Any<NSView>` are all prohibited.
 
 The following requirements are valid. Detailed descriptions follow.
 
@@ -126,7 +128,7 @@ Example:
 let a : Any<ProtocolA, Any<ProtocolB, ProtocolC>>
 ```
 
-A nested `Any<...>` may declare a class or any-class constraint, even if its parent `Any<...>` contains a class or any-class constraint, or a sibling `Any<...>` constraint declares a class or any-class constraint. However, one of the classes must be a subclass of every other class declared within such constraints, or all the classes must be the same. This class, if it exists, is chosen as the `Any<...>` construct's constraint.
+A nested `Any<...>` may declare a class or any-class constraint, even if its parent `Any<...>` contains a class or any-class constraint, or a sibling `Any<...>` constraint declares a class or any-class constraint. However, one of the classes must be a subclass of every other class declared within such constraints, or all the classes must be the same. This class, if it exists, is chosen as the `Any<...>` construct's constraint. (See *Existential Type Equivalence*, below.)
 
 Examples:
 
@@ -165,6 +167,8 @@ typealias PiedPiperResultsViewController = Any<CustomTableViewController, PiedPi
 ```
 
 However, recursive (self-referential) nested typealiases are not allowed.
+
+An `Any<...>`'s `where` clause may reference protocols defined within nested `Any<...>` requirements, but the reverse is not true: an `Any<...>`'s `where` clause cannot reference protocols in the parent `Any<...>`.
 
 Any `Any<...>` containing nested `Any<...>`s can be conceptually 'flattened' and written as an equivalent `Any<...>` containing no nested `Any<...>` requirements. The two representations are exactly interchangeable.
 
@@ -653,6 +657,12 @@ func setFirstElement(collection: Any<Collection>, theInt: Int, theString: String
 ```
 
 ## Miscellaneous
+
+### Metatype
+
+The metatype of an existential allows for access to any static methods defined across the protocols and classes comprising the existential, and any initializers defined across the protocols comprising the initializer, subject to the accessibility requirements described above in *Associated Types and Member Exposure*. It is defined as `Any<...>.Protocol`, where `...` is replaced by the requirements and `where` clause defined by an existential type.
+
+Note that existentials containing class requirements are still considered to have metatypes of `Protocol` type. An existential containing class requirements and protocol requirements is not equivalent to just the class described in the class requirement.
 
 ### Repeated Protocols
 
