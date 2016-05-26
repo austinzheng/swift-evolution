@@ -11,7 +11,7 @@ Swift's support for existential types is currently quite limited: one or more pr
 
 ## Acknowledgements
 
-Many thanks to [Matthew Johnson](https://github.com/anandabits), Thorsten Seitz, [David Smith](https://twitter.com/Catfish_Man), [Adrian Zubarev](https://github.com/DevAndArtist), and TBD, whose feedback and contributions were instrumental in composing this proposal.
+Many thanks to [Matthew Johnson](https://github.com/anandabits), Thorsten Seitz, [David Smith](https://twitter.com/Catfish_Man), [Joe Groff](https://twitter.com/jckarter), [Adrian Zubarev](https://github.com/DevAndArtist), and TBD, whose feedback and contributions were instrumental in composing this proposal.
 
 ## Motivation
 
@@ -181,6 +181,7 @@ The `where` clause contains one or more constraints. Constraints must involve th
 The acceptable constraints following the `where` clause are identical to those following the `where` clause on a constrained extension or generic function/type definition. In each case `X` must be the name of an associated type defined on one of the `Any<...>` existential's component protocols:
 
 * Type equality constraint: `X == ConcreteType`
+* Type equality constraint: `X == AnotherAssociatedType`
 * Type conformance constraint: `X : SomeProtocol`
 * Type inheritance constraint: `X : SomeClass`
 * Composite constraint: `X : Any<...>`
@@ -193,16 +194,16 @@ let a : Any<Collection where Collection.Element == Int>
 
 // Can be any Collection whose elements are Streamable; the Collection itself 
 // must also be Streamable.
-let b : Any<Streamable, Collection where Collection.Element == Streamable> 
+let b : Any<Streamable, Collection where Collection.Element : Streamable> 
 ```
 
 Associated types used within the `where` clause must belong to the protocols in the current or previous requirements. For example, this is wrong:
 
 ```swift
 // NOT ALLOWED
-// SetAlgebraType wasn't used in a protocol requirement anywhere in the
-// existential, so we can't use its ElementType.
-let a : Any<Collection where Collection.Element == SetAlgebraType.Element>
+// RawRepresentable wasn't used in a protocol requirement anywhere in the
+// existential, so we can't use its RawValue.
+let a : Any<Collection where Collection.Element == RawRepresentable.RawValue>
 ```
 
 **Shortcut 'dot' notation**: If there is only one protocol with associated types specified in the requirements, and there are no nested `Any<...>` requirements with `where` clauses of their own, that protocol's name can be omitted from the `where` clause constraints:
@@ -343,77 +344,113 @@ Note that for the sake of the descriptions below, any concrete class is consider
 
 The type system will endeavor to allow users to invoke protocol methods on objects of existential type, while still preserving type safety. A comprehensive overview as to how this should work follows.
 
-Each protocol with associated types that an existential requires has its own set of associated types. These sets of associated types do not overlap, with one exception. Each protocol is considered in isolation, and only its own associated types are examined. The exception is this: if same-type constraints bind a given associated type to another protocol's associated type, the constraints on that associated type (and any other linked types) are carried over and considered as well.
+A variable of existential type may have zero or more associated types attached to it, accreted by conforming to protocols that define associated types. The associated types belonging to a value of existential type will be referred to as *anonymous associated types*, since their exact underlying type is not necessarily known at compile time or relevant at runtime.
 
-Note that initializers should always return the type of the existential.
-
-#### Members with no associated types
-
-The simplest case are protocol members (methods, initializers, properties, etc) which do not use the associated types at all. These should always be accessible.
-
-Example:
+These associated types can be *opened* and accessed through a syntax consisting of the variable name, followed by the dot accessor operator, followed by the name of the associated type. An example follows:
 
 ```swift
-let a : Any<Collection> = ...
+let a : Any<Collection>
 
-// This is okay, because isEmpty is a property that does not use associated types.
-let collectionIsEmpty : Bool = a.isEmpty
+// A variable whose type is the Index associated type of the underlying
+// concrete type of 'a'.
+let theIndex : a.Index = ...
+
+// A variable whose type is the Element associated type of the underlying
+// concrete type of 'a'.
+let theElement : a.Element = ...
 ```
 
-#### Members with inputs of associated types
-
-Protocol members whose inputs' types are defined using associated types only become accessible if all those associated types are bound to a specific concrete type, and the output requirements (below) are met.
-
-If a member is deemed 'nonaccessible', its API is exposed with any disqualifying associated types set to `Nothing`.
-
-Inputs are defined as the arguments of methods, the arguments of initializers, the arguments and return values of subscripts with setters, and properties with setters.
-
-Example:
+Any such anonymous associated type, or any variable of such a type, is only valid within the lexical scope within which the parent existential was defined. Anoymous associated types cannot escape their scopes; values of these types must be cast to 'real' types before they can leave:
 
 ```swift
-protocol FooProtocol {
-	associatedtype AssocA : Streamable
-	associatedtype AssocB
-	func someMethod(x: AssocB) -> AssocA
+// This is expressly prohibited. "a.Element" is meaningless outside the context
+// of the function body.
+func doSomething(a: Any<Collection>) -> a.Element {
+	return a.first!
 }
-
-let a : Any<FooProtocol where .AssocA == MyStreamer, .AssocB == Int>
-
-// Can call someMethod(), since all the input associated types used in that
-// method are bound.
-let returnValue : MyStreamer = a.someMethod(5)
 ```
 
-Input types are contravariant. It is a serious error to pass in a value whose type is a supertype of the underlying associated type:
+Anonymous associated types also cannot be used to specialize generics. If an anonymous associated type must be used to specialize a generic, translate it into a 'real' type first (see *Anonymous associated types to real types*, below).
 
 ```swift
-protocol MyProtocol { }
-class Foo : MyProtocol { ... }
-class Bar : MyProtocol { ... }
+protocol Protocol1 { }
 
-var someFoos : [Foo] = [Foo(), Foo(), Foo()]
-var a : Any<MutableCollection where .Element : MyProtocol>
+func doSomething<T : Protocol1>(arg: T) { ... }
 
-// Okay, because someFoos meets the existential requirements
-a = someFoos
+func doSomethingElse(a: Any<Collection where .Element : Protocol1>) {
+	let firstElement : a.Element = a.first!
 
-// What if we could call the superscript setter with the supertype?
-// If so, this would be "allowed", since Bar conforms to MyProtocol
-// But it is wrong, because the underlying type of A.Element is Foo.
-a[0] = Bar()
+	// NOT ALLOWED - allowing this would mean allowing doSomething<T> to be
+	// specialized upon "a.Element", which makes little sense.
+	doSomething(firstElement)
+}
 ```
 
-Note that `as?` can be used to narrow existentials at runtime, allowing the user to conditionally use members they would normally not have access to due to static type safety. See *Dynamic casting using as?*, below.
+#### Protocol APIs and associated types
 
-#### Members with outputs of associated types
+If an existential conforms to a protocol with associated types, the APIs of that protocol are exposed in terms of the anonymous associated types belonging to that existential. This applies to both the types of arguments and the types of return values, or the equivalent concepts for initializers, protocols, and subscripts.
 
-Protocol members whose outputs' types are defined using associated types only become accessible if the output type is a 'bare' associated type, or the associated type is a parameter to a covariant generic type such as `Optional<T>`. However, if the output types are all bound to concrete types, the member becomes available, even if the output type isn't covariant. In addition to all of this, the input requirements (above) also must be met.
+Here is an example of a function that does useful work exclusively through the use of anonymous associated types:
 
-If a member is deemed 'nonaccessible', its API is exposed with any disqualifying associated types set to `Nothing`.
+```swift
+// Given a mutable collection, swap its first and last items.
+// Not a generic function. 
+func swapFirstAndLast(inout collection: Any<BidirectionalMutableCollection>) {
+	// firstIndex and lastIndex both have type "collection.Index"
+	guard let firstIndex = collection.startIndex,
+		lastIndex = collection.endIndex?.predecessor(collection) where lastIndex != firstIndex else {
+			print("Nothing to do")
+			return
+	}
 
-Outputs are defined as the return values of methods, the return values of get-only subscripts, and get-only properties. Output types are covariant, and it is acceptable to return a supertype of the underlying associated type.
+	// oldFirstItem has type "collection.Element"
+	let oldFirstItem = collection[firstIndex]
 
-The actual type of the output exposed to the consumer is the most specific out of the following, from top to bottom:
+	collection[firstIndex] = collection[lastIndex]
+	collection[lastIndex] = oldFirstItem
+}
+```
+
+#### Real types to anonymous associated types
+
+It is often important to convert between a real type (e.g. nominal and structural types) and an anonymous associated type. In both directions, type translation will be accomplished through the unconditional casting operator `as` at compile time, and the `as?` and `as!` conditional casting operators at runtime.
+
+A real type can only be unconditionally translated into an anonymous associated type if the existential constrained that associated type to be a concrete type with a same-type constraint. This is because protocol members' inputs are contravariant. An example follows:
+
+```swift
+var a : Any<BidirectionalMutableCollection where .Element == String> = ...
+
+let input = "West Meoley"
+
+// Not actually necessary, since the compiler knows "a.Element" is String.
+// A fully constrained anonymous associated type is synonymous with the concrete
+// type it's forced to take on, and the two are interchangeable.
+// However, 'as' casting is still available if desired.
+let anonymousInput = input as a.Element
+
+a[a.startIndex] = anonymousInput
+
+// as mentioned, this also works:
+a[a.startIndex] = input
+```
+
+However, it should always be possible to conditionally cast from a real type to an anonymous associated type, no matter how loosely the associated type is constrained:
+
+```swift
+// If the collection allows it, set the first element in the collection to a given string.
+func setFirstElementIn(inout collection: Any<Collection> toString string: String) {
+	if let element = string as? collection.Element {
+		// At this point, 'element' is of type "collection.Element"
+		collection[collection.startIndex] = element
+	}
+}
+```
+
+Note that `as?` can be used to narrow existentials at runtime, allowing the user to fully constrain the associated types and making working with the APIs more convenient. See *Dynamic casting using as?*, below.
+
+#### Anonymous associated types to real types
+
+An anonymous associated type can also be translated into a real type. The most specific type that unconditional `as` casting works with for a given anonymous associated type is the most specific out of the following, from top to bottom:
 
 * `Any`
 
@@ -423,7 +460,7 @@ The actual type of the output exposed to the consumer is the most specific out o
 
 * If the associated type is constrained with a concrete type requirement, that concrete type
 
-Some examples follow. In this first example, `AssocType` is completely unconstrained, both in the protocol and the existential definition, so the return value can only be `Any`.
+Some examples follow. In this first example, `AssocType` is completely unconstrained, both in the protocol and the existential definition, so the return value can only be unconditionally cast to `Any`.
 
 ```swift
 protocol Foo {
@@ -431,24 +468,44 @@ protocol Foo {
 	func someFunc() -> AssocType
 }
 
-let a : Any<Foo>
+let a : Any<Foo> = ...
 
-// Result inferred to be Any
-let result = a.someFunc()
+let result : a.AssocType = a.someFunc()
+
+// Okay
+let r1 = result as Any
+
+// Also okay
+// At runtime, check if 'result' is a String, and if so downcast it and put it
+// in 'r2', otherwise 'r2' is nil.
+let r2 = result as? String
 ```
 
-In this example, `AssocType` is constrained to `Protocol1` and `Protocol2` when defined, but unconstrained in the existential definition:
+In this example, `AssocType` is constrained to `Protocol1` and `Streamable` when defined, but unconstrained in the existential definition:
 
 ```swift
+extension String : Protocol1 { }
+
 protocol Foo {
-	associatedtype AssocType : Protocol1, Protocol2
+	associatedtype AssocType : Protocol1, Streamable
 	func someFunc() -> AssocType
 }
 
-let a : Any<Foo>
+let a : Any<Foo> = ...
 
-// Result inferred to be Any<Protocol1, Protocol2>
-let result = a.someFunc()
+let result : a.AssocType = a.someFunc()
+
+// Okay
+let r1 = result as Any<Protocol1, Streamable>
+
+// Okay, because String conforms to both Protocol1 and Streamable
+// (Note that this is a conditional cast and could fail at runtime, returning 
+// nil instead of a String)
+let r2 = result as? String
+
+// Not okay; Int is known not to conform at runtime (unless it is retroactively
+// extended)
+let r3 = result as? Int
 ```
 
 In this example, `AssocType` is still constrained, but the existential definition also constrains it to `Protocol3`:
@@ -459,14 +516,17 @@ protocol Foo {
 	func someFunc() -> AssocType
 }
 
-let a : Any<Foo where .AssocType : Protocol3>
+let a : Any<Foo where .AssocType : Protocol3> = ...
 
-// Result inferred to be Any<Protocol1, Protocol2, Protocol3>
+let result : a.AssocType = a.someFunc()
+
+// Okay
+// Result constrained to be Any<Protocol1, Protocol2, Protocol3>
 // (Think of it as an 'Any<Any<Protocol1, Protocol2>, Protocol3>')
-let result = a.someFunc()
+let r1 = result as Any<Protocol1, Protocol2, Protocol3>
 ```
 
-In this example, `AssocType` is a concrete type, so that is what is returned:
+In this example, `AssocType` is constrained to be the concrete type `Small`, so that is what is returned:
 
 ```swift
 protocol Foo {
@@ -482,45 +542,34 @@ class Big : Foo {
 
 let a : Any<Foo where .AssocType == Small> = Big()
 
-// Result inferred to be concrete type 'Small'
-let result = a.someFunc()
+let result : a.AssocType = a.someFunc()
+
+// Okay
+let r1 : Small = result as Small
+
+// Also okay, since the type is fully constrained and thus synonymous.
+let r2 : Small = result
 ```
 
-Covariant generic output types are allowed, even without concrete type constraints. An example of a protocol method returning a covariant generic type (in this case, `Optional<T>`):
+Unconditional casting to covariant generic output types are allowed, even without concrete type constraints.
 
 ```swift
 protocol Foo {
 	associatedtype AssocType
+	// Optional<T> is covariant on T
 	func someFunc() -> AssocType?
 }
 
-let a : Any<Foo where .AssocType : Protocol1>
+let a : Any<Foo where .AssocType : Protocol1> = ...
 
-// Result inferred to be Protocol1?
-let result = a.someFunc()
+let result : a.AssocType? = a.someFunc()
+
+// Okay
+// Turn the ".a.AssocType?" into an "Protocol1?"
+let r1 = result as Protocol1?
 ```
 
-(Note that user-defined generic types are invariant; only `Optional` and the generic value-semantic collections are covariant.)
-
-Here is an example of invariant generic types causing an error:
-
-```swift
-protocol Foo {
-	associatedtype AssocType1
-	associatedtype AssocType2
-	func someFunc() -> (AssocType1, AssocType2)
-}
-
-class MyClass : Foo {
-	func someFunc() -> (String, Int)
-}
-
-let a : Any<Foo where .AssocType2 == Int>
-
-// This is NOT valid, because tuples are not covariant.
-// In other words, (Any, Int) is not a supertype of (String, Int)
-let result = a.someFunc()
-```
+(In practice, this will be limited to `Optional`. Only optionals and the three value-semantic collections in Swift are covariant, and variance cannot be defined on any other type. However, the value-semantic collections cannot be cast from `SwiftCollection<SomeConcreteType>` to `SwiftCollection<SomeExistentialType>` unless `SomeConcreteType` is a reference type, so they cannot be used with this feature either.)
 
 ## Usage
 
@@ -708,6 +757,10 @@ This grammar is preliminary, and is provided only as a guide to understanding th
 In addition to adding capabilities to Swift directly, this proposal lays the groundwork for other proposals which fit into the Completing Generics constellation.
 
 ### Opening existentials
+
+A value of existential type can be *opened* - that is, the underlying concrete type of the value can be extracted and 'bound' to an anonymous type parameter within a certain scope. This greatly increases the power of existential types.
+
+#### `Self` requirements
 
 The *Associated Types* section above discusses runtime narrowing of existential types using `as?` and similar keywords. However, `as?` casting only operates on a single existential type in isolation; it does not allow a user to take two different existential types and compare their `Self` values.
 
