@@ -61,7 +61,7 @@ Within the angle brackets `<` and `>` are one or more *requirements*. Requiremen
 
 For consistency, `Any<...>` with exactly one protocol requirement is exactly equal to just that bare protocol. `P` can be used in lieu of `Any<P>`, where `P` is a protocol with or without associated type or self requirements.
 
-`Any<...>` with an any-class requirement or a class requirement, but no protocol requirements, is prohibited and will result in a compiler warning to use `AnyObject` or that class directly, respectively. For example, `Any<Any<NSView>>`, `Any<NSObject, Any<NSView>>`, and `Any<NSView>` are all prohibited.
+`Any<...>` with an any-class requirement or a class requirement, but no protocol requirements, is prohibited and will result in a compiler warning to use `AnyObject` or that class directly, respectively. For example, `Any<Any<NSView>>`, `Any<NSObject, Any<NSView>>`, and `Any<NSView>` are all prohibited. (*Rationale*: `Any<...>` denotes an existential type, which cannot be used in the same ways as a concrete type, but an `Any<NSView>` would be a synonym for `NSView`, which isn't an existential. Hence we'd have a type that looked like an existential, but actually wasn't, which would only confuse people without any real benefit.)
 
 The following requirements are valid. Detailed descriptions follow.
 
@@ -174,7 +174,9 @@ Any `Any<...>` containing nested `Any<...>`s can be conceptually 'flattened' and
 
 ### `where` clause
 
-An `Any<...>` existential can have zero or one `where` clauses, following the list of requirements.
+An `Any<...>` existential can optionally have a single `where` clause. If this `where` clause exists, it comes after all the requirements.
+
+(Note that an existential can have a `where` clause, but it might also have nested `Any<...>` requirements that have their own `where` clauses. This is allowed.)
 
 The `where` clause contains one or more constraints. Constraints must involve the associated types of the previously required protocols. `Self` cannot be constrained.
 
@@ -197,12 +199,14 @@ let a : Any<Collection where Collection.Element == Int>
 let b : Any<Streamable, Collection where Collection.Element : Streamable> 
 ```
 
-Associated types used within the `where` clause must belong to the protocols in the current or previous requirements. For example, this is wrong:
+Associated types used within the `where` clause must belong to one of the protocols previously declared in a requirement. For example, this is wrong:
 
 ```swift
 // NOT ALLOWED
 // RawRepresentable wasn't used in a protocol requirement anywhere in the
-// existential, so we can't use its RawValue.
+// existential, so we can't use its RawValue. We can only use the associated
+// types of 'Collection', since that's the only protocol the existential is
+// required to conform to.
 let a : Any<Collection where Collection.Element == RawRepresentable.RawValue>
 ```
 
@@ -344,7 +348,7 @@ Note that for the sake of the descriptions below, any concrete class is consider
 
 The type system will endeavor to allow users to invoke protocol methods on objects of existential type, while still preserving type safety. A comprehensive overview as to how this should work follows.
 
-A variable of existential type may have zero or more associated types attached to it, accreted by conforming to protocols that define associated types. The associated types belonging to a value of existential type will be referred to as *anonymous associated types*, since their exact underlying type is not necessarily known at compile time or relevant at runtime.
+A variable of existential type may have zero or more associated types attached to it, accreted by conforming to protocols that define associated types. The associated types belonging to a value of existential type will be referred to as **anonymous associated types**, since their exact underlying type is not necessarily known at compile time or relevant at runtime.
 
 These associated types can be *opened* and accessed through a syntax consisting of the variable name, followed by the dot accessor operator, followed by the name of the associated type. An example follows:
 
@@ -370,21 +374,49 @@ func doSomething(a: Any<Collection>) -> a.Element {
 }
 ```
 
-Anonymous associated types also cannot be used to specialize generics. If an anonymous associated type must be used to specialize a generic, translate it into a 'real' type first (see *Anonymous associated types to real types*, below).
+Anonymous associated types can be used to specialize generic functions and instantiate generic types:
 
 ```swift
-protocol Protocol1 { }
+protocol MyProtocol { 
+	func foo()
+}
 
-func doSomething<T : Protocol1>(arg: T) { ... }
+func doSomething<T : MyProtocol>(arg: T) {
+	arg.foo()
+}
 
-func doSomethingElse(a: Any<Collection where .Element : Protocol1>) {
+func doSomethingElse(a: Any<Collection where .Element : MyProtocol>) {
 	let firstElement : a.Element = a.first!
 
-	// NOT ALLOWED - allowing this would mean allowing doSomething<T> to be
-	// specialized upon "a.Element", which makes little sense.
+	// This is okay
 	doSomething(firstElement)
 }
 ```
+
+This, for example, allows the creation of generic objects parameterized on an anonymous associated type, like the array in the following example:
+
+```swift
+protocol MyProtocol {
+	associatedtype T
+	func foo(_ x: Int) -> T
+	func bar(_ y: [T]) -> String
+}
+
+func doSomething(a: Any<MyProtocol>) -> String {
+	// Create an array of "a.T" to hold return values from foo()
+	var foos : [a.T] = []
+	for i in 0..<10 {
+		foos.append(a.foo(i))
+	}
+	// Pass that "[a.T]" into bar() to get a String
+	let finalResult = a.bar(foos)
+	return finalResult
+}
+```
+
+Their metatypes are also available, although subject to the same restrictions as the types themselves.
+
+Naming conflicts (for example, if a `Collection`-conforming type has an `Index` property), will be resolved in favor of the anonymous associated type. In practice, given the Swift naming conventions, this problem should rarely come up, if ever. It is probably not worth spending additional time addressing.
 
 #### Protocol APIs and associated types
 
@@ -758,10 +790,6 @@ In addition to adding capabilities to Swift directly, this proposal lays the gro
 
 ### Opening existentials
 
-A value of existential type can be *opened* - that is, the underlying concrete type of the value can be extracted and 'bound' to an anonymous type parameter within a certain scope. This greatly increases the power of existential types.
-
-#### `Self` requirements
-
 The *Associated Types* section above discusses runtime narrowing of existential types using `as?` and similar keywords. However, `as?` casting only operates on a single existential type in isolation; it does not allow a user to take two different existential types and compare their `Self` values.
 
 An example illustrates this problem. Two different existential types are both `Equatable`. Since they are both `Equatable`, it's *possible* that their values might be comparable using `==`. However, this is only true if the underlying concrete types of the values are identical: 
@@ -779,24 +807,24 @@ let b : Any<Equatable, Protocol2> = ... // assigned a Foo as well
 
 There is no way to decide at compile time whether `a` and `b` contain values of the same concrete type in all cases; this checking must be deferred to runtime. What is required is a way to 'open' an existential and bind its underlying concrete type to a type variable. That type variable can then be subsequently used in conjunction with dynamic casts to determine whether a different existential also shares that same underlying type. If so, the compiler can allow subsequent code to assume both values are the same type.
 
-One possible way of accomplishing this is by defining an `openas` operator, analogous to `as?`. The following example is taken from *Completing Generics*. (Note that, even though the `openas` operator is invoked in an `if let` statement, it should unconditionally succeed.)
+One possible way of accomplishing this is by allowing for a runtime test that can compare the underlying types and 'open' them into an anonymous type variable. Here is an example of how this might be done:
 
 ```swift
 let e1: Equatable = ...
 let e2: Equatable = ...
 
-if let storedInE1 = e1 openas T {
-  // is e2 also a T? 
-  if let storedInE2 = e2 as? T {
-    // okay: storedInT1 and storedInE2 are both of type T, which we know is Equatable
-    if storedInE1 == storedInE2 { ... }
-  }
+if let storedInE1 = e1 openas T, storedInE2 = e2 as? T {
+  let areEqual = e1 == e2
 }
 ```
 
 ### Additional 'kind' (value/reference/etc) constraints
 
 Currently, Swift supports only the generic `class` constraint, for specifying "any class". Additional constraints, such as `struct`, `enum`, and/or `value`, might be proposed in the future. If so, retrofitting them to work with this proposal should be conceptually simple: for example, one can imagine an 'any-struct' counterpart to the existing 'any-class' requirement.
+
+### Bottom type support
+
+Some discussion participants expressed interest in a bottom type for Swift (a type that is considered a subtype for all other types, much like how `Any` is a top type). If such a type is ever implemented, a follow-up proposal can relax existential semantics in a way that any existential defined with contradicting constraints (such as `Any<Int, String>`) is considered synonymous to that bottom type. We could then allow existential requirements to be built out of generic type parameters, with any such 'contradicting' constraints resulting in an existential of the bottom type.
 
 ## Impact on existing code
 
