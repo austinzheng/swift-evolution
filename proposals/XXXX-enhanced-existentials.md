@@ -54,7 +54,7 @@ Almost all of these problems can be solved by **generalizing the use of existent
 
 	```swift
 	// "Any type conforming to Collection, whose Elements are Ints"
-	var a = Collection where .Element == Int
+	var a : Collection where .Element == Int
 	a = [1, 2, 3, 4]
 	a = Set([4, 5, 6, 7])
 	```
