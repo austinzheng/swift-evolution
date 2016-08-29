@@ -658,7 +658,7 @@ Here is an example of how `as?` casting can be used to do 'useful' work at runti
 
 ```swift
 // Set the first element of a string or integer collection to some value.
-func setFirstElement(collection: Collection, theInt: Int, theString: String) -> Bool {
+func setFirstElement(collection: Collection, theInt: Int, theString: String) where Collection : class -> Bool {
 	guard !collection.isEmpty else { return false }
 
 	if let intCollection = collection as? Collection where .Element == Int {
